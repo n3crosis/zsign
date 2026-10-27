@@ -94,6 +94,17 @@ make clean && make SYSTEM_MINIZIP=ng   # links minizip-ng via its minizip compat
 
 Open `build/windows/vs2022/zsign.sln` in Visual Studio 2022 and build.
 
+### WebAssembly (Node.js or Bun)
+
+The `zsign-wasm-node.zip` release asset contains `zsign.js` and `zsign.wasm`. Keep both files together and run `node zsign.js -v` or `bun zsign.js -v` (or pass the usual zsign arguments). This build uses a Node-compatible host filesystem, so it is intended for Node.js or Bun rather than a browser.
+
+To build it locally with Docker from the repository root:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/src" -w /src \
+  emscripten/emsdk:3.1.74 bash build/wasm/build.sh
+```
+
 ## Usage
 
 ```

@@ -11,7 +11,7 @@
 
 #ifdef _WIN32
 #include "common_win32.h"
-#else
+#elif !defined(__EMSCRIPTEN__)
 #include <sys/wait.h>
 #endif
 
@@ -65,7 +65,10 @@ static bool InstallSignedIpa(const string& strOutputFile)
 		return false;
 	}
 
-#ifdef _WIN32
+#ifdef __EMSCRIPTEN__
+	ZLog::ErrorV(">>> Installing an IPA is unavailable in the WebAssembly build.\n");
+	return false;
+#elif defined(_WIN32)
 	string strCommand = "ideviceinstaller install \"";
 	strCommand += strOutputFile;
 	strCommand += "\"";
