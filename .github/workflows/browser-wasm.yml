@@ -1,0 +1,32 @@
+name: Shared WASM
+on:
+  push:
+    branches: [feat/browser-wasm-sdk]
+    paths: ['build/wasm/**', '.github/workflows/browser-wasm.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  browser:
+    if: github.ref == 'refs/heads/feat/browser-wasm-sdk'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Build one shared Node and browser runtime
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/src" -w /src \
+            emscripten/emsdk:3.1.74 bash build/wasm/build.sh
+      - name: Test same module in Node and Chromium
+        run: |
+          google-chrome --version | tee bin/browser-version.txt
+          node build/wasm/browser-smoke.mjs
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: zsign-wasm-${{ github.sha }}
+          path: bin/
+          if-no-files-found: error
+          retention-days: 14

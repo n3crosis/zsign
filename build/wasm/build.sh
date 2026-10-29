@@ -38,5 +38,18 @@ em++ -std=c++11 -O3 -Wno-unused-result \
   -I"$workdir/openssl-install/include" \
   src/*.cpp src/common/*.cpp "$workdir"/objects/*.o \
   -L"$workdir/openssl-install/lib" -lssl -lcrypto \
-  -sENVIRONMENT=node -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 \
-  -o bin/zsign.js
+  -sENVIRONMENT=web,worker,node -sFORCE_FILESYSTEM=1 -lnodefs.js \
+  -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createZsignModule -sINVOKE_RUN=0 \
+  -sEXPORTED_RUNTIME_METHODS='["callMain","FS","NODEFS","HEAPU8"]' \
+  -sDYNAMIC_EXECUTION=0 -sALLOW_MEMORY_GROWTH=1 \
+  -o bin/zsign.mjs
+cp build/wasm/node-cli.cjs bin/zsign.js
+# Keep existing dependency notices with the shared runtime.
+cp LICENSE bin/LICENSE
+cp "$workdir/openssl-${openssl_version}/LICENSE.txt" bin/OPENSSL-LICENSE.txt
+mkdir -p bin/bundled-notices
+cp src/third-party/zlib/zlib.h src/third-party/minizip/{zip.h,unzip.h,crypt.h} bin/bundled-notices/
+emcc --version > bin/compiler-version.txt
+git rev-parse HEAD > bin/source-revision.txt
+(cd bin && sha256sum zsign.js zsign.mjs zsign.wasm > SHA256SUMS)
+
