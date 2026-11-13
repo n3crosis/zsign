@@ -66,7 +66,7 @@ On Linux with C++11, OpenSSL 3 development files, pkg-config, Python 3 and the
 `openssl` command:
 
 ```sh
-./tests/run_portable.sh
+./test/library/run_portable.sh
 ```
 
 The tests generate disposable identities and synthetic Mach-O files. They cover

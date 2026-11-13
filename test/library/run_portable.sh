@@ -4,7 +4,7 @@
 # network, Xcode, device or signing credentials are needed.
 set -eu
 export PYTHONDONTWRITEBYTECODE=1
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 build=$(mktemp -d "${TMPDIR:-/tmp}/zsign-library-tests.XXXXXX")
 trap 'rm -rf "$build"' EXIT HUP INT TERM
 ${CXX:-c++} -std=c++11 -fPIC -shared -O2 -pthread -Isrc -Isrc/common \
@@ -13,5 +13,5 @@ ${CXX:-c++} -std=c++11 -fPIC -shared -O2 -pthread -Isrc -Isrc/common \
     src/common/fs.cpp src/common/json.cpp src/common/log.cpp src/common/sha.cpp \
     src/common/timer.cpp src/common/util.cpp \
     $(pkg-config --libs openssl) -o "$build/libzsign.so"
-python3 tests/test_signer_bridge.py "$build/libzsign.so"
-ZSIGN_LIBRARY="$build/libzsign.so" python3 -m unittest discover -s tests -p 'test_ios_identity_validation.py' -v
+python3 test/library/test_signer_bridge.py "$build/libzsign.so"
+ZSIGN_LIBRARY="$build/libzsign.so" python3 -m unittest discover -s test/library -p 'test_ios_identity_validation.py' -v
