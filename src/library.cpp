@@ -28,11 +28,12 @@ int fail(char *error, size_t capacity, const char *message) {
     ERR_clear_error();
     return -1;
 }
-bool readFile(const char *path, std::vector<unsigned char>& data) {
-    File file{open(path, O_RDONLY | O_NOFOLLOW)};
+bool readFile(const char *path, std::vector<unsigned char>& data,
+              size_t limit = 16 * 1024 * 1024) {
+    File file{open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)};
     struct stat st;
     if (file.fd < 0 || fstat(file.fd, &st) || !S_ISREG(st.st_mode) ||
-        st.st_size <= 0 || st.st_size > 16 * 1024 * 1024) return false;
+        st.st_size <= 0 || static_cast<uint64_t>(st.st_size) > limit) return false;
     data.resize(st.st_size);
     return pread(file.fd, data.data(), data.size(), 0) == (ssize_t)data.size();
 }
@@ -94,10 +95,12 @@ static uint32_t be32(const unsigned char *p) {
 static bool bounded(uint64_t offset, uint64_t size, uint64_t total) {
     return offset <= total && size <= total - offset;
 }
-// Read only page geometry from an existing signature, never its cached hashes.
+// Inspect page geometry and required external seals, never reuse cached hashes.
 // Apple CodeDirectory uses log2(bytes); 16 KB is supported on native arm64 pages.
-static bool codePageSize(const unsigned char *p, size_t size, uint32_t codeLength, uint8_t& pageSize) {
+static bool codePageSize(const unsigned char *p, size_t size, uint32_t codeLength,
+                         uint8_t& pageSize, bool& hasInfoSeal, bool& hasResourceSeal) {
     pageSize = 12;
+    hasInfoSeal = hasResourceSeal = false;
     if (size < 12) return false;
     if (std::all_of(p, p + size, [](unsigned char c) { return c == 0; })) return true;
     if (be32(p) != CSMAGIC_EMBEDDED_SIGNATURE) return false;
@@ -143,6 +146,15 @@ static bool codePageSize(const unsigned char *p, size_t size, uint32_t codeLengt
         };
         if (!stringInHeader(be32(cd + 20)) ||
             (version >= 0x20200 && be32(cd + 48) && !stringInHeader(be32(cd + 48)))) return false;
+        // Nonzero special-slot hashes require corresponding actual input bytes.
+        // Presence is not determined by nSpecialSlots alone: zero hashes are absent.
+        auto slotPresent = [&](uint32_t slot) {
+            if (be32(cd + 24) < slot) return false;
+            const auto *hash = cd + hashOffset - slot * hashSize;
+            return std::any_of(hash, hash + hashSize, [](unsigned char c) { return c != 0; });
+        };
+        hasInfoSeal = hasInfoSeal || slotPresent(1);
+        hasResourceSeal = hasResourceSeal || slotPresent(3);
         seen |= bit;
     }
     return (seen & 1) != 0;
@@ -215,8 +227,9 @@ extern "C" int zsign_check_identity(const char *pkcs12, const char *password,
         return 0;
     } catch (...) { return fail(error, capacity, "signing identity unavailable or invalid"); }
 }
-extern "C" int zsign_sign_library(const char *path, const char *pkcs12, const char *password,
-    const char *profile, const char *team, const char *identifier, char *error, size_t capacity) {
+static int signLibrary(const char *path, const char *pkcs12, const char *password,
+    const char *profile, const char *team, const char *identifier,
+    const char *infoPlistPath, const char *resourcePath, char *error, size_t capacity) {
     std::lock_guard<std::mutex> guard(libraryMutex);
     if (!path || !pkcs12 || !password || !profile || !team || !*team || strlen(team) > 128 ||
         !identifier || !*identifier || strlen(identifier) > 255)
@@ -236,14 +249,29 @@ extern "C" int zsign_sign_library(const char *path, const char *pkcs12, const ch
         if (pread(file.fd, bytes.data(), bytes.size(), 0) != (ssize_t)bytes.size())
             return fail(error, capacity, "cannot read staged native image");
         uint8_t pageSize = 12;
+        bool hasInfoSeal = false, hasResourceSeal = false;
         if (!bounded(signatureStart, signatureSize, bytes.size()) ||
-            !codePageSize(bytes.data() + signatureStart, signatureSize, signatureStart, pageSize))
+            !codePageSize(bytes.data() + signatureStart, signatureSize, signatureStart,
+                          pageSize, hasInfoSeal, hasResourceSeal))
             return fail(error, capacity, "invalid or unsupported existing code signature layout");
         ZArchO image;
         if (!image.Init(bytes.data(), bytes.size())) return fail(error, capacity, "cannot parse staged native image");
+        const bool hasResourcePath = resourcePath && *resourcePath;
+        if ((!infoPlistPath && hasInfoSeal && image.m_strInfoPlist.empty()) ||
+            (hasResourceSeal && !hasResourcePath))
+            return fail(error, capacity, "existing signature requires external framework metadata/resources");
+        std::string infoData = image.m_strInfoPlist, resources;
+        if (infoPlistPath) {
+            std::vector<unsigned char> infoBytes, resourceBytes;
+            if (!readFile(infoPlistPath, infoBytes, 1024 * 1024) ||
+                (hasResourcePath && !readFile(resourcePath, resourceBytes)))
+                return fail(error, capacity, "cannot read bounded staged framework metadata/resources");
+            infoData.assign((const char*)infoBytes.data(), infoBytes.size());
+            if (hasResourcePath) resources.assign((const char*)resourceBytes.data(), resourceBytes.size());
+        }
         std::string sha1(20, 0), sha256(32, 0);
-        if (!image.m_strInfoPlist.empty()) ZSHA::SHA(image.m_strInfoPlist, sha1, sha256);
-        if (!image.Sign(&asset, true, identifier, sha1, sha256, "", pageSize))
+        if (!infoData.empty()) ZSHA::SHA(infoData, sha1, sha256);
+        if (!image.Sign(&asset, true, identifier, sha1, sha256, resources, pageSize))
             return fail(error, capacity, "native signing failed (signature reservation may be too small)");
         // Only the signature reservation changes. Partial I/O requires discarding the private stage.
         size_t offset = image.m_uCodeLength;
@@ -258,4 +286,18 @@ extern "C" int zsign_sign_library(const char *path, const char *pkcs12, const ch
         ERR_clear_error();
         return 0;
     } catch (...) { return fail(error, capacity, "native signing failed"); }
+}
+
+extern "C" int zsign_sign_library(const char *path, const char *pkcs12, const char *password,
+    const char *profile, const char *team, const char *identifier, char *error, size_t capacity) {
+    return signLibrary(path, pkcs12, password, profile, team, identifier, nullptr, nullptr, error, capacity);
+}
+
+extern "C" int zsign_sign_library_with_resources(const char *path, const char *pkcs12, const char *password,
+    const char *profile, const char *team, const char *identifier,
+    const char *info_plist, const char *code_resources, char *error, size_t capacity) {
+    if (!info_plist || !*info_plist)
+        return fail(error, capacity, "staged framework Info.plist is required");
+    return signLibrary(path, pkcs12, password, profile, team, identifier,
+                       info_plist, code_resources, error, capacity);
 }

@@ -18,6 +18,16 @@ int zsign_check_identity(const char *pkcs12, const char *password,
 int zsign_sign_library(const char *path, const char *pkcs12, const char *password,
     const char *profile, const char *team, const char *identifier,
     char *error, size_t capacity);
+// Signs the main image of an already-staged framework using its actual external
+// Info.plist (<= 1 MiB) and CodeResources (<= 16 MiB). Supplied paths must be
+// regular, non-symlink files. code_resources may be NULL/empty only if the input
+// signature has no resource seal. Their bytes are sealed exactly; this does NOT
+// regenerate or validate the resource manifest. The caller must ensure it matches the staged
+// resources, including nested code. Only the Mach-O signature reservation changes.
+// The bare-library API above rejects required external seals it cannot supply.
+int zsign_sign_library_with_resources(const char *path, const char *pkcs12, const char *password,
+    const char *profile, const char *team, const char *identifier,
+    const char *info_plist, const char *code_resources, char *error, size_t capacity);
 // Extracts bounded embedded CMS SignedData content, never a raw plist or XML scan.
 // Returns 0 on success, 1 on malformed/missing content or insufficient capacity.
 // Does not verify the CMS signature or establish Apple profile trust.

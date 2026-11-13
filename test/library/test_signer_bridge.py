@@ -5,6 +5,7 @@ Does not establish kernel trust or iOS loadability.
 """
 import ctypes
 import hashlib
+import os
 from pathlib import Path
 import plistlib
 import struct
@@ -38,7 +39,7 @@ def image(code_length=4096, reservation=32768, page_power=None):
     return (header + text + link + signature).ljust(code_length, b"\x5a") + existing.ljust(reservation, b"\0")
 
 
-def verify_signature(root, signed, code_length, reservation, page_power):
+def verify_signature(root, signed, code_length, reservation, page_power, info=None, resources=None):
     data = signed[code_length:]
     magic, length, count = struct.unpack_from(">III", data)
     assert magic == 0xfade0cc0 and length <= reservation and len(data) == reservation
@@ -53,6 +54,10 @@ def verify_signature(root, signed, code_length, reservation, page_power):
     hash_size, hash_type, _, actual_power = cd[36:40]
     assert code_limit == code_length and hash_type == 2 and hash_size == 32
     assert actual_power == page_power
+    special_count = struct.unpack_from(">I", cd, 24)[0]
+    for slot, content in [(1, info), (3, resources)]:
+        digest = cd[hash_offset - slot * 32:hash_offset - (slot - 1) * 32] if special_count >= slot else bytes(32)
+        assert digest == (hashlib.sha256(content).digest() if content is not None else bytes(32)), slot
     assert page_count == code_length // (1 << page_power) + bool(code_length % (1 << page_power))
     for page in range(page_count):
         chunk = signed[page * (1 << page_power):min(code_length, (page + 1) * (1 << page_power))]
@@ -69,6 +74,7 @@ def verify_signature(root, signed, code_length, reservation, page_power):
 def load(path):
     library = ctypes.CDLL(str(Path(path).resolve()))
     library.zsign_sign_library.argtypes = [ctypes.c_char_p] * 7 + [ctypes.c_size_t]
+    library.zsign_sign_library_with_resources.argtypes = [ctypes.c_char_p] * 9 + [ctypes.c_size_t]
     return library
 
 
@@ -89,6 +95,60 @@ def main():
         def sign(team=b"TESTTEAM01", password=b"test-only", p12="identity.p12"):
             return enabled.zsign_sign_library(str(native).encode(), str(root / p12).encode(), password,
                 str(root / "profile.cms").encode(), team, b"org.test", message, 1024)
+
+        def sign_resources(info_path="Info.plist", resource_path="CodeResources"):
+            return enabled.zsign_sign_library_with_resources(str(native).encode(),
+                str(root / "identity.p12").encode(), b"test-only", str(root / "profile.cms").encode(),
+                b"TESTTEAM01", b"org.test",
+                None if info_path is None else str(root / info_path).encode(),
+                None if resource_path is None else (str(root / resource_path).encode() if resource_path else b""),
+                message, 1024)
+
+        info = plistlib.dumps({"CFBundleIdentifier": "org.test", "CFBundleExecutable": "native"},
+                             fmt=plistlib.FMT_BINARY)
+        resources = plistlib.dumps({"files": {}, "files2": {}, "rules": {}, "rules2": {}})
+        (root / "Info.plist").write_bytes(info)
+        (root / "CodeResources").write_bytes(resources)
+        original = image(page_power=14)
+        native.write_bytes(original)
+        assert sign_resources() == 0, message.value
+        signed = native.read_bytes()
+        assert signed[:4096] == original[:4096] and len(signed) == len(original)
+        verify_signature(root, signed, 4096, 32768, 14, info, resources)
+        assert sign() != 0 and native.read_bytes() == signed # Never silently strip external seals.
+        for absent in (None, ""):
+            assert sign_resources(resource_path=absent) != 0 and native.read_bytes() == signed
+        assert sign_resources() == 0, message.value
+        verify_signature(root, native.read_bytes(), 4096, 32768, 14, info, resources)
+
+        # Seal supplied bytes afresh, including binary Info.plist, not cached digests.
+        info = plistlib.dumps({"CFBundleIdentifier": "org.test", "CFBundleExecutable": "native", "changed": True})
+        resources = plistlib.dumps({"files": {}, "rules": {"^.*": True}})
+        (root / "Info.plist").write_bytes(info)
+        (root / "CodeResources").write_bytes(resources)
+        assert sign_resources() == 0, message.value
+        signed = native.read_bytes()
+        verify_signature(root, signed, 4096, 32768, 14, info, resources)
+        (root / "info-link").symlink_to(root / "Info.plist")
+        (root / "resources-link").symlink_to(root / "CodeResources")
+        os.mkfifo(root / "info-pipe")
+        os.mkfifo(root / "resources-pipe")
+        (root / "oversize-info").write_bytes(bytes(1024 * 1024 + 1))
+        (root / "oversize-resources").write_bytes(bytes(16 * 1024 * 1024 + 1))
+        for info_path, resource_path in [(None, "CodeResources"), ("missing", "CodeResources"),
+                ("info-link", "CodeResources"), ("Info.plist", "resources-link"),
+                ("info-pipe", "CodeResources"), ("Info.plist", "resources-pipe"),
+                ("oversize-info", "CodeResources"), ("Info.plist", "oversize-resources"),
+                ("Info.plist", "missing")]:
+            assert sign_resources(info_path, resource_path) != 0 and native.read_bytes() == signed
+
+        # Info-only sealing is allowed when no resource manifest/seal exists.
+        for absent in (None, ""):
+            native.write_bytes(original)
+            assert sign_resources(resource_path=absent) == 0, message.value
+            verify_signature(root, native.read_bytes(), 4096, 32768, 14, info, None)
+            signed_info = native.read_bytes()
+            assert sign() != 0 and native.read_bytes() == signed_info
 
         # Same team is insufficient when the certificate is absent from the profile.
         openssl(root, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=Other/OU=TESTTEAM01", "-days", "1", "-keyout", "other.key", "-out", "other.pem")
@@ -187,7 +247,7 @@ def main():
         original = image(4096, 256, 14)
         native.write_bytes(original)
         assert sign() != 0 and native.read_bytes() == original
-    print("PASS: identity rejection, bounds, 4/16 KB geometry, independent hashes/CMS, no-resize failures, re-signing")
+    print("PASS: identity rejection, external framework seals, bounds, 4/16 KB geometry, independent hashes/CMS, no-resize failures, re-signing")
 
 
 
