@@ -50,19 +50,19 @@ bool ZArchO::Init(uint8_t* pBase, uint32_t uLength)
 		case LC_SEGMENT:
 		{
 			segment_command* seglc = (segment_command*)pLoadCommand;
-			if (0 == strcmp("__TEXT", seglc->segname)) {
+			if (0 == strncmp("__TEXT", seglc->segname, 16)) {
 				s_uExecSegLimit = seglc->vmsize;
 				for (uint32_t j = 0; j < BO(seglc->nsects); j++) {
 					section* sect = (section*)((pLoadCommand + sizeof(segment_command)) + sizeof(section) * j);
-					if (0 == strcmp("__text", sect->sectname)) {
+					if (0 == strncmp("__text", sect->sectname, 16)) {
 						if (BO(sect->offset) > (BO(m_pHeader->sizeofcmds) + m_uHeaderSize)) {
 							m_uLoadCommandsFreeSpace = BO(sect->offset) - BO(m_pHeader->sizeofcmds) - m_uHeaderSize;
 						}
-					} else if (0 == strcmp("__info_plist", sect->sectname)) {
+					} else if (0 == strncmp("__info_plist", sect->sectname, 16)) {
 						m_strInfoPlist.append((const char*)m_pBase + BO(sect->offset), BO(sect->size));
 					}
 				}
-			} else if (0 == strcmp("__LINKEDIT", seglc->segname)) {
+			} else if (0 == strncmp("__LINKEDIT", seglc->segname, 16)) {
 				m_pLinkEditSegment = pLoadCommand;
 			}
 		}
@@ -70,19 +70,19 @@ bool ZArchO::Init(uint8_t* pBase, uint32_t uLength)
 		case LC_SEGMENT_64:
 		{
 			segment_command_64* seglc = (segment_command_64*)pLoadCommand;
-			if (0 == strcmp("__TEXT", seglc->segname)) {
+			if (0 == strncmp("__TEXT", seglc->segname, 16)) {
 				s_uExecSegLimit = seglc->vmsize;
 				for (uint32_t j = 0; j < BO(seglc->nsects); j++) {
 					section_64* sect = (section_64*)((pLoadCommand + sizeof(segment_command_64)) + sizeof(section_64) * j);
-					if (0 == strcmp("__text", sect->sectname)) {
+					if (0 == strncmp("__text", sect->sectname, 16)) {
 						if (BO(sect->offset) > (BO(m_pHeader->sizeofcmds) + m_uHeaderSize)) {
 							m_uLoadCommandsFreeSpace = BO(sect->offset) - BO(m_pHeader->sizeofcmds) - m_uHeaderSize;
 						}
-					} else if (0 == strcmp("__info_plist", sect->sectname)) {
+					} else if (0 == strncmp("__info_plist", sect->sectname, 16)) {
 						m_strInfoPlist.append((const char*)m_pBase + BO(sect->offset), BO((uint32_t)sect->size));
 					}
 				}
-			} else if (0 == strcmp("__LINKEDIT", seglc->segname)) {
+			} else if (0 == strncmp("__LINKEDIT", seglc->segname, 16)) {
 				m_pLinkEditSegment = pLoadCommand;
 			}
 		}
@@ -331,7 +331,8 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 	const string& strInfoSHA256, 
 	const string& strCodeResourcesSHA1, 
 	const string& strCodeResourcesSHA256, 
-	string& strOutput)
+	string& strOutput,
+	uint8_t uPageSize)
 {
 	string strRequirementsSlot;
 	string strEntitlementsSlot;
@@ -373,7 +374,8 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 	uint8_t* pCodeSlots256Data = NULL;
 	uint32_t uCodeSlots1DataLength = 0;
 	uint32_t uCodeSlots256DataLength = 0;
-	if (!bForce) {
+	// Legacy cached slots carry no page-size metadata. Never reuse them at 16 KB.
+	if (!bForce && uPageSize == 12) {
 		ZSign::GetCodeSignatureExistsCodeSlotsData(m_pSignBase, pCodeSlots1Data, uCodeSlots1DataLength, pCodeSlots256Data, uCodeSlots256DataLength);
 	}
 
@@ -421,7 +423,7 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 			strDerEntitlementsSlotSHA1,
 			IsExecute(),
 			pSignAsset->m_bAdhoc,
-			strCodeDirectorySlot)) {
+			strCodeDirectorySlot, uPageSize)) {
 			ZLog::Error(">>> Build SHA1 CodeDirectory failed!\n");
 			return false;
 		}
@@ -443,7 +445,7 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 		strDerEntitlementsSlotSHA256,
 		IsExecute(),
 		pSignAsset->m_bAdhoc,
-		strAltnateCodeDirectorySlot)) {
+		strAltnateCodeDirectorySlot, uPageSize)) {
 		ZLog::Error(">>> Build SHA256 CodeDirectory failed!\n");
 		return false;
 	}
@@ -567,7 +569,8 @@ bool ZArchO::Sign(ZSignAsset* pSignAsset,
 					const string& strBundleId, 
 					const string& strInfoSHA1, 
 					const string& strInfoSHA256, 
-					const string& strCodeResourcesData)
+					const string& strCodeResourcesData,
+					uint8_t uPageSize)
 {
 	if (NULL == m_pSignBase) {
 		m_bEnoughSpace = false;
@@ -585,20 +588,19 @@ bool ZArchO::Sign(ZSignAsset* pSignAsset,
 	}
 
 	string strCodeSignBlob;
-	if (!BuildCodeSignature(pSignAsset, bForce, strBundleId, strInfoSHA1, strInfoSHA256, strCodeResourcesSHA1, strCodeResourcesSHA256, strCodeSignBlob)) {
+	if (!BuildCodeSignature(pSignAsset, bForce, strBundleId, strInfoSHA1, strInfoSHA256,
+		strCodeResourcesSHA1, strCodeResourcesSHA256, strCodeSignBlob, uPageSize) || strCodeSignBlob.empty()) {
 		ZLog::Error(">>> Build CodeSignature failed!\n");
 		return false;
 	}
 
-	int nSpaceLength = (int)m_uLength - (int)m_uCodeLength - (int)strCodeSignBlob.size();
-	if (nSpaceLength < 0) {
+	if (m_uCodeLength > m_uLength || strCodeSignBlob.size() > m_uLength - m_uCodeLength) {
 		m_bEnoughSpace = false;
-		ZLog::WarnV(">>> No enough CodeSignature space (now: %d, need: %d).\n", (int)m_uLength - (int)m_uCodeLength, (int)strCodeSignBlob.size());
+		ZLog::Warn(">>> Not enough CodeSignature space.\n");
 		return false;
 	}
 
 	memcpy(m_pBase + m_uCodeLength, strCodeSignBlob.data(), strCodeSignBlob.size());
-	//memset(m_pBase + m_uCodeLength + strCodeSignBlob.size(), 0, nSpaceLength);
 	return true;
 }
 

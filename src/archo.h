@@ -16,7 +16,8 @@ public:
 				const string& strBundleId, 
 				const string& strInfoSHA1, 
 				const string& strInfoSHA256, 
-				const string& strCodeResourcesData);
+				const string& strCodeResourcesData,
+				uint8_t uPageSize = 12);
 
 	void PrintInfo();
 	bool IsExecute();
@@ -36,7 +37,8 @@ private:
 									const string& strInfoSHA256,
 									const string& strCodeResourcesSHA1, 
 									const string& strCodeResourcesSHA256, 
-									string& strOutput);
+									string& strOutput,
+									uint8_t uPageSize);
 
 public:
 	uint8_t*		m_pBase;

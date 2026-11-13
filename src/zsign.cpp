@@ -458,7 +458,7 @@ int main(int argc, char* argv[])
 	if (arrProvFiles.size() > 1) {
 		list<ZSignAsset> zsaList;
 		for (const string& provFile : arrProvFiles) {
-			zsaList.push_back(ZSignAsset());
+			zsaList.emplace_back();
 			if (!zsaList.back().Init(strCertFile, strPKeyFile, provFile, strEntitleFile, strPassword, bAdhoc, bSHA256Only, false)) {
 				ZLog::ErrorV(">>> Failed to init provision: %s\n", provFile.c_str());
 				zsaList.pop_back();
