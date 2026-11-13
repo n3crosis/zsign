@@ -1,11 +1,44 @@
 #include "common.h"
 #include "openssl.h"
+#if defined(ZSIGN_SWIFTPM)
+#include <OpenSSL/pem.h>
+#include <OpenSSL/cms.h>
+#include <OpenSSL/err.h>
+#include <OpenSSL/provider.h>
+#include <OpenSSL/pkcs12.h>
+#include <OpenSSL/conf.h>
+#else
 #include <openssl/pem.h>
 #include <openssl/cms.h>
 #include <openssl/err.h>
 #include <openssl/provider.h>
 #include <openssl/pkcs12.h>
 #include <openssl/conf.h>
+#endif
+
+#if defined(ZSIGN_SWIFTPM)
+// The pinned XCFramework links its legacy provider statically.
+extern "C" OSSL_provider_init_fn ossl_legacy_provider_init;
+#endif
+
+bool ZSignAsset::InitializeProviders()
+{
+	struct Providers {
+		OSSL_PROVIDER* normal = nullptr;
+		OSSL_PROVIDER* legacy = nullptr;
+		Providers() {
+			normal = OSSL_PROVIDER_load(nullptr, "default");
+#if defined(ZSIGN_SWIFTPM)
+			if (!OSSL_PROVIDER_add_builtin(nullptr, "legacy", ossl_legacy_provider_init)) return;
+#endif
+			legacy = OSSL_PROVIDER_load(nullptr, "legacy");
+		}
+		~Providers() { OSSL_PROVIDER_unload(legacy); OSSL_PROVIDER_unload(normal); }
+	};
+	static Providers providers;
+	return providers.normal != nullptr;
+}
+
 
 const char* ZSignAsset::s_szAppleDevCACert = ""
 "-----BEGIN CERTIFICATE-----\n"
@@ -272,7 +305,8 @@ ZSignAsset::OpenSSLInit::OpenSSLInit()
 
 bool ZSignAsset::CMSError()
 {
-	ERR_print_errors_fp(stdout);
+	if (ZLog::GetLogLevel() != ZLog::E_NONE) ERR_print_errors_fp(stdout);
+	else ERR_clear_error();
 	return false;
 }
 
@@ -368,6 +402,8 @@ bool ZSignAsset::GenerateCMS(void* pscert, void* pspkey, const string& strCDHash
 	EVP_PKEY* spkey = (EVP_PKEY*)pspkey;
 
 	STACK_OF(X509)* otherCerts = sk_X509_new_null();
+	auto freeChain = [](STACK_OF(X509)* chain) { sk_X509_pop_free(chain, X509_free); };
+	std::unique_ptr<STACK_OF(X509), decltype(freeChain)> ownedChain(otherCerts, freeChain);
 	if (!otherCerts) {
 		return CMSError();
 	}
@@ -433,12 +469,14 @@ bool ZSignAsset::GenerateCMS(void* pscert, void* pspkey, const string& strCDHash
 	}
 
 	BIO* in = BIO_new_mem_buf(strCDHashData.c_str(), (int)strCDHashData.size());
+	std::unique_ptr<BIO, decltype(&BIO_free)> owned_in(in, BIO_free);
 	if (!in) {
 		return CMSError();
 	}
 
 	int nFlags = CMS_PARTIAL | CMS_DETACHED | CMS_NOSMIMECAP | CMS_BINARY;
 	CMS_ContentInfo* cms = CMS_sign(NULL, NULL, otherCerts, NULL, nFlags);
+	std::unique_ptr<CMS_ContentInfo, decltype(&CMS_ContentInfo_free)> owned_cms(cms, CMS_ContentInfo_free);
 	if (!cms) {
 		return CMSError();
 	}
@@ -451,6 +489,7 @@ bool ZSignAsset::GenerateCMS(void* pscert, void* pspkey, const string& strCDHash
 
 	// add plist
 	ASN1_OBJECT* obj = OBJ_txt2obj("1.2.840.113635.100.9.1", 1);
+	std::unique_ptr<ASN1_OBJECT, decltype(&ASN1_OBJECT_free)> owned_obj(obj, ASN1_OBJECT_free);
 	if (!obj) {
 		return CMSError();
 	}
@@ -472,17 +511,20 @@ bool ZSignAsset::GenerateCMS(void* pscert, void* pspkey, const string& strCDHash
 	}
 
 	ASN1_OBJECT* obj2 = OBJ_txt2obj("1.2.840.113635.100.9.2", 1);
+	std::unique_ptr<ASN1_OBJECT, decltype(&ASN1_OBJECT_free)> owned_obj2(obj2, ASN1_OBJECT_free);
 	if (!obj2) {
 		return CMSError();
 	}
 
 	X509_ATTRIBUTE* attr = X509_ATTRIBUTE_new();
+	std::unique_ptr<X509_ATTRIBUTE, decltype(&X509_ATTRIBUTE_free)> owned_attr(attr, X509_ATTRIBUTE_free);
 	if (!attr) {
 		return CMSError();
 	}
 	X509_ATTRIBUTE_set1_object(attr, obj2);
 
 	ASN1_TYPE* type_256 = (ASN1_TYPE*)GenerateASN1Type(sha256);
+	std::unique_ptr<ASN1_TYPE, decltype(&ASN1_TYPE_free)> owned_type_256(type_256, ASN1_TYPE_free);
 	if (!type_256) {
 		return CMSError();
 	}
@@ -498,6 +540,7 @@ bool ZSignAsset::GenerateCMS(void* pscert, void* pspkey, const string& strCDHash
 	}
 
 	BIO* out = BIO_new(BIO_s_mem());
+	std::unique_ptr<BIO, decltype(&BIO_free)> owned_out(out, BIO_free);
 	if (!out) {
 		return CMSError();
 	}
@@ -515,8 +558,6 @@ bool ZSignAsset::GenerateCMS(void* pscert, void* pspkey, const string& strCDHash
 
 	strCMSOutput.clear();
 	strCMSOutput.append(bptr->data, bptr->length);
-	ASN1_TYPE_free(type_256);
-	sk_X509_pop_free(otherCerts, X509_free); // CMS_sign holds its own references
 	return (!strCMSOutput.empty());
 }
 
@@ -823,6 +864,13 @@ ZSignAsset::ZSignAsset()
 	m_bAdhoc = false;
 	m_bSingleBinary = false;
 	m_bSHA256Only = false;
+}
+
+ZSignAsset::~ZSignAsset()
+{
+	EVP_PKEY_free((EVP_PKEY*)m_evpPKey);
+	X509_free((X509*)m_x509Cert);
+	sk_X509_pop_free((STACK_OF(X509)*)m_caCerts, X509_free);
 }
 
 bool ZSignAsset::Init(

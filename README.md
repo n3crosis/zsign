@@ -289,3 +289,8 @@ zsign is cross-platform, scriptable on non-Apple hosts, supports dylib injection
 ## License
 
 zsign is licensed under the MIT License. See the [LICENSE](LICENSE) file.
+
+## Swift Package
+
+For the standalone Apple-platform library API, see [Swift package integration](docs/swift-package.md).
+The package is a small addition to original upstream zsign and exports `import ZsignC`.

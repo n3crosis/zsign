@@ -1,6 +1,10 @@
 #include "sha.h"
 #include "json.h"
+#if defined(ZSIGN_SWIFTPM)
+#include <OpenSSL/sha.h>
+#else
 #include <openssl/sha.h>
+#endif
 
 bool ZSHA::SHA1(uint8_t* data, size_t size, string& strOutput)
 {

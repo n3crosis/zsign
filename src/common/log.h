@@ -29,6 +29,7 @@ public:
 	static bool PrintResultV(bool bSuccess, const char* szFormat, ...);
 	static void Print(int nLevel, const char* szLog);
 	static void PrintV(int nLevel, const char* szFormat, ...);
+	static int GetLogLevel() { return g_nLogLevel; }
 	static void SetLogLever(int nLogLevel) { g_nLogLevel = nLogLevel; }
 
 private:

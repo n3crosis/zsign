@@ -25,7 +25,8 @@ public:
 										const string& strDerEntitlementsSlotSHA,
 										bool isExecuteArch,
 										bool isAdhoc,
-										string& strOutput);
+										string& strOutput,
+										uint8_t uPageSize = 12);
 	
 	static bool SlotBuildCMSSignature(ZSignAsset* pSignAsset,
 										const string& strCodeDirectorySlot,

@@ -5,6 +5,14 @@ class ZSignAsset
 {
 public:
 	ZSignAsset();
+	~ZSignAsset();
+	ZSignAsset(const ZSignAsset&) = delete;
+	ZSignAsset& operator=(const ZSignAsset&) = delete;
+
+	// Bounded standalone-library identity loading, implemented by the C bridge.
+	bool InitStandalone(const char* pkcs12, const char* password,
+	                    const char* profile, const char* team);
+	static bool InitializeProviders();
 
 public:
 	bool Init(const string& strCertFile, 

@@ -4,7 +4,11 @@
 #include "openssl.h"
 #include "signing.h"
 #include <algorithm>
+#if defined(ZSIGN_SWIFTPM)
+#include <OpenSSL/sha.h>
+#else
 #include <openssl/sha.h>
+#endif
 
 void ZSign::_DERLength(string& strBlob, uint64_t uLength)
 {
@@ -462,12 +466,15 @@ bool ZSign::SlotBuildCodeDirectory(bool bAlternate,
 	const string& strDerEntitlementsSlotSHA,
 	bool isExecuteArch,
 	bool isAdhoc,
-	string& strOutput)
+	string& strOutput,
+	uint8_t uPageSize)
 {
 	strOutput.clear();
 	if (NULL == pCodeBase || uCodeLength <= 0 || strBundleId.empty() || (strTeamId.empty() && !isAdhoc)) {
 		return false;
 	}
+	// CodeDirectory stores log2(bytes), not the VM page size. Bound before shifting.
+	if (uPageSize != 12 && uPageSize != 14) return false;
 
 	uint32_t uVersion = 0x20400;
 
@@ -485,7 +492,7 @@ bool ZSign::SlotBuildCodeDirectory(bool bAlternate,
 	cdHeader.hashSize = bAlternate ? 32 : 20;
 	cdHeader.hashType = bAlternate ? 2 : 1;
 	cdHeader.spare1 = 0;
-	cdHeader.pageSize = 12;
+	cdHeader.pageSize = uPageSize;
 	cdHeader.spare2 = 0;
 	cdHeader.scatterOffset = 0;
 	cdHeader.teamOffset = 0;
@@ -517,9 +524,9 @@ bool ZSign::SlotBuildCodeDirectory(bool bAlternate,
 		arrSpecialSlots.erase(arrSpecialSlots.begin(), itLastUsedSpecialSlot);
 	}
 
-	uint32_t uPageSize = 1u << cdHeader.pageSize;
-	uint32_t uPages = uCodeLength / uPageSize;
-	uint32_t uRemain = uCodeLength % uPageSize;
+	uint32_t uPageBytes = 1u << cdHeader.pageSize;
+	uint32_t uPages = uCodeLength / uPageBytes;
+	uint32_t uRemain = uCodeLength % uPageBytes;
 	uint32_t uCodeSlots = uPages + (uRemain > 0 ? 1 : 0);
 
 	uint32_t uHeaderLength = 44;
@@ -589,19 +596,19 @@ bool ZSign::SlotBuildCodeDirectory(bool bAlternate,
 		uint8_t hash[32]; // large enough for both SHA1 (20) and SHA256 (32)
 		for (uint32_t i = 0; i < uPages; i++) {
 			if (1 == cdHeader.hashType) {
-				::SHA1(pCodeBase + uPageSize * i, uPageSize, hash);
+				::SHA1(pCodeBase + uPageBytes * i, uPageBytes, hash);
 				strOutput.append((const char*)hash, 20);
 			} else {
-				::SHA256(pCodeBase + uPageSize * i, uPageSize, hash);
+				::SHA256(pCodeBase + uPageBytes * i, uPageBytes, hash);
 				strOutput.append((const char*)hash, 32);
 			}
 		}
 		if (uRemain > 0) {
 			if (1 == cdHeader.hashType) {
-				::SHA1(pCodeBase + uPageSize * uPages, uRemain, hash);
+				::SHA1(pCodeBase + uPageBytes * uPages, uRemain, hash);
 				strOutput.append((const char*)hash, 20);
 			} else {
-				::SHA256(pCodeBase + uPageSize * uPages, uRemain, hash);
+				::SHA256(pCodeBase + uPageBytes * uPages, uRemain, hash);
 				strOutput.append((const char*)hash, 32);
 			}
 		}
