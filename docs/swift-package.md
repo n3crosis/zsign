@@ -70,6 +70,10 @@ can change resource hashes and nested-code requirements, so reusing an unchanged
 manifest is not sufficient in that case. Validate the complete staged framework,
 not only the executable copied outside its bundle.
 
+Framework/library signatures contain neither XML nor DER entitlement blobs.
+Entitlements are still emitted for `MH_EXECUTE` images by the existing executable
+signing path. See Apple's [code-signature format guidance](https://developer.apple.com/documentation/xcode/using-the-latest-code-signature-format).
+
 These APIs check local consistency, not Apple trust, profile signature validity,
 revocation, device eligibility or kernel acceptance. The host must validate those
 before installing/loading the staged result. Never treat successful signing or

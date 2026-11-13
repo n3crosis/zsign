@@ -338,10 +338,13 @@ bool ZArchO::BuildCodeSignature(ZSignAsset* pSignAsset,
 	string strEntitlementsSlot;
 	string strDerEntitlementsSlot;
 
-	string strEmptyEntitlements = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict/>\n</plist>\n";
 	ZSign::SlotBuildRequirements(strBundleId, pSignAsset->m_strSubjectCN, strRequirementsSlot);
-	ZSign::SlotBuildEntitlements(IsExecute() ? pSignAsset->m_strEntitleData : strEmptyEntitlements, strEntitlementsSlot);
-	ZSign::SlotBuildDerEntitlements(IsExecute() ? pSignAsset->m_strEntitleData : "", strDerEntitlementsSlot);
+	// Entitlements belong to executable processes, never frameworks or libraries.
+	// Do not emit even an empty process-entitlement dictionary for libraries.
+	if (IsExecute()) {
+		ZSign::SlotBuildEntitlements(pSignAsset->m_strEntitleData, strEntitlementsSlot);
+		ZSign::SlotBuildDerEntitlements(pSignAsset->m_strEntitleData, strDerEntitlementsSlot);
+	}
 
 	string strRequirementsSlotSHA1;
 	string strRequirementsSlotSHA256;

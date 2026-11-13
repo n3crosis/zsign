@@ -55,6 +55,8 @@ def verify_signature(root, signed, code_length, reservation, page_power, info=No
     assert code_limit == code_length and hash_type == 2 and hash_size == 32
     assert actual_power == page_power
     special_count = struct.unpack_from(">I", cd, 24)[0]
+    assert 5 not in slots and 7 not in slots # Frameworks/libraries have no entitlement blobs.
+    assert special_count == (3 if resources is not None else 2)
     for slot, content in [(1, info), (3, resources)]:
         digest = cd[hash_offset - slot * 32:hash_offset - (slot - 1) * 32] if special_count >= slot else bytes(32)
         assert digest == (hashlib.sha256(content).digest() if content is not None else bytes(32)), slot

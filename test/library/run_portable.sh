@@ -13,5 +13,8 @@ ${CXX:-c++} -std=c++11 -fPIC -shared -O2 -pthread -Isrc -Isrc/common \
     src/common/fs.cpp src/common/json.cpp src/common/log.cpp src/common/sha.cpp \
     src/common/timer.cpp src/common/util.cpp \
     $(pkg-config --libs openssl) -o "$build/libzsign.so"
+${CXX:-c++} -std=c++11 -Isrc -Isrc/common test/library/test_entitlements.cpp \
+    -L"$build" -lzsign -Wl,-rpath,"$build" -o "$build/test-entitlements"
+"$build/test-entitlements"
 python3 test/library/test_signer_bridge.py "$build/libzsign.so"
 ZSIGN_LIBRARY="$build/libzsign.so" python3 -m unittest discover -s test/library -p 'test_ios_identity_validation.py' -v
